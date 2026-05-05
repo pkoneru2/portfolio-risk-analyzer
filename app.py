@@ -5,6 +5,7 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 from openai import OpenAI
+import io
 
 # Page configuration
 st.set_page_config(
@@ -17,39 +18,218 @@ st.set_page_config(
 st.title("📊 AI Portfolio Risk Analyzer")
 st.markdown("Enter your stock portfolio and get real-time risk analysis powered by AI.")
 
-# Sidebar
-st.sidebar.header("Portfolio Setup")
-st.sidebar.markdown("Enter 2-8 stock tickers separated by commas.")
+# Historical S&P 500 reference data (static)
+HISTORICAL_SP500 = {
+    "10-Year Avg Annual Return": "10.7%",
+    "20-Year Avg Annual Return": "9.8%",
+    "Historical Avg Volatility": "~15%",
+    "Historical Avg Sharpe": "~0.4–0.6",
+    "Source": "Damodaran NYU (1928–2024)"
+}
 
-tickers_input = st.sidebar.text_input(
-    "Stock Tickers",
-    value="AAPL, MSFT, GOOGL, AMZN",
-    help="Enter ticker symbols separated by commas (e.g. AAPL, MSFT, GOOGL)"
+# ── Column detection keywords ──
+TICKER_KEYWORDS = ['ticker', 'symbol', 'stock', 'security', 'instrument', 'asset']
+AMOUNT_KEYWORDS = ['current value', 'market value', 'value', 'amount', 'mkt val',
+                   'market val', 'cost', 'worth', 'balance', 'current balance']
+PRICE_KEYWORDS = ['last price', 'price', 'nav', 'last nav', 'close']
+
+def detect_column(df, keywords):
+    cols_lower = {col.lower().strip(): col for col in df.columns}
+    for keyword in keywords:
+        for col_lower, col_original in cols_lower.items():
+            if keyword in col_lower:
+                return col_original
+    return None
+
+def clean_amount(val):
+    if pd.isna(val):
+        return 0.0
+    val = str(val).replace('$', '').replace(',', '').replace(' ', '').replace('+', '').strip()
+    try:
+        return abs(float(val))
+    except:
+        return 0.0
+
+def clean_ticker(val):
+    if pd.isna(val):
+        return None
+    val = str(val).strip().upper()
+    for suffix in ['.O', '.N', '.A', '.B', ' UN', ' UW']:
+        val = val.replace(suffix, '')
+    skip_keywords = ['CASH', 'MONEY MARKET', 'PENDING', 'SWEEP', 'TOTAL',
+                     'FDIC', 'CORE', 'SPAXX', '**', 'N/A', '--']
+    if any(k in val for k in skip_keywords):
+        return None
+    if not val or len(val) > 6:
+        return None
+    return val
+
+def parse_fidelity_csv(raw):
+    raw = raw.lstrip('\ufeff')
+    lines = raw.split('\n')
+    header_row = 0
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in TICKER_KEYWORDS):
+            header_row = i
+            break
+    data_lines = [lines[header_row]]
+    for line in lines[header_row + 1:]:
+        stripped = line.strip()
+        if stripped.startswith('"The data') or stripped.startswith('"Brokerage') or stripped.startswith('"Date'):
+            break
+        if stripped:
+            if stripped.endswith(','):
+                stripped = stripped[:-1]
+            data_lines.append(stripped)
+    clean_csv = '\n'.join(data_lines)
+    df = pd.read_csv(io.StringIO(clean_csv))
+    df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+    return df.dropna(how='all')
+
+def parse_generic_csv(raw):
+    raw = raw.lstrip('\ufeff')
+    lines = raw.split('\n')
+    header_row = 0
+    for i, line in enumerate(lines):
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in TICKER_KEYWORDS):
+            header_row = i
+            break
+    data_lines = []
+    for line in lines[header_row:]:
+        stripped = line.strip()
+        if stripped and not stripped.startswith('"The') and not stripped.startswith('"Brokerage') and not stripped.startswith('"Date'):
+            data_lines.append(stripped)
+    clean_csv = '\n'.join(data_lines)
+    try:
+        df = pd.read_csv(io.StringIO(clean_csv))
+    except:
+        df = pd.read_csv(io.StringIO(clean_csv), on_bad_lines='skip')
+    df.columns = [str(c).strip().lstrip('\ufeff') for c in df.columns]
+    return df.dropna(how='all')
+
+# ── Sidebar ──
+st.sidebar.header("Portfolio Setup")
+
+input_method = st.sidebar.radio(
+    "How would you like to enter your portfolio?",
+    ["📝 Manual Input", "📂 Upload Broker CSV"],
+    index=0
 )
 
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-
-if len(tickers) < 2:
-    st.warning("Please enter at least 2 stock tickers to analyze portfolio risk.")
-    st.stop()
-
-if len(tickers) > 8:
-    st.warning("Please enter no more than 8 tickers for best results.")
-    st.stop()
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Investment Amount per Stock ($):**")
 investment_amounts = {}
-for ticker in tickers:
-    amount = st.sidebar.number_input(
-        f"{ticker} ($)",
-        min_value=0,
-        max_value=10_000_000,
-        value=10_000,
-        step=1_000,
-        key=f"inv_{ticker}"
+tickers = []
+csv_prices = {}
+
+if input_method == "📂 Upload Broker CSV":
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Upload your portfolio CSV from your broker.**")
+    st.sidebar.markdown("*Supports Fidelity, Schwab, Robinhood, E*Trade, and most brokers.*")
+
+    template_df = pd.DataFrame({
+        'Ticker': ['AAPL', 'MSFT', 'GOOGL'],
+        'Amount': [10000, 5000, 8000]
+    })
+    template_csv = template_df.to_csv(index=False)
+    st.sidebar.download_button(
+        label="⬇️ Download template (if needed)",
+        data=template_csv,
+        file_name="portfolio_template.csv",
+        mime="text/csv"
     )
-    investment_amounts[ticker] = amount
+
+    uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
+
+    if uploaded_file is not None:
+        try:
+            raw = uploaded_file.read().decode('utf-8', errors='ignore')
+
+            try:
+                df = parse_fidelity_csv(raw)
+            except:
+                df = parse_generic_csv(raw)
+
+            ticker_col = detect_column(df, TICKER_KEYWORDS)
+            amount_col = detect_column(df, AMOUNT_KEYWORDS)
+            price_col = detect_column(df, PRICE_KEYWORDS)
+
+            if not ticker_col or not amount_col:
+                st.sidebar.warning("Could not auto-detect columns. Please select them below:")
+                all_cols = list(df.columns)
+                ticker_col = st.sidebar.selectbox(
+                    "Which column contains stock tickers/symbols?",
+                    all_cols, key="ticker_col_select"
+                )
+                amount_col = st.sidebar.selectbox(
+                    "Which column contains investment amounts/values?",
+                    all_cols, key="amount_col_select"
+                )
+            else:
+                st.sidebar.success(f"✅ Auto-detected: Tickers from **{ticker_col}**, Amounts from **{amount_col}**")
+
+            for _, row in df.iterrows():
+                ticker = clean_ticker(row[ticker_col])
+                amount = clean_amount(row[amount_col])
+                if ticker and amount > 0:
+                    investment_amounts[ticker] = investment_amounts.get(ticker, 0) + amount
+                    # Store broker price as fallback
+                    if price_col:
+                        price = clean_amount(row[price_col])
+                        if price > 0:
+                            csv_prices[ticker] = price
+
+            tickers = list(investment_amounts.keys())
+
+            if len(tickers) < 2:
+                st.sidebar.error("Could not find enough valid stock tickers. Please check your file or use the template.")
+                st.stop()
+
+            if len(tickers) > 20:
+                st.sidebar.warning(f"Found {len(tickers)} stocks — showing top 20 by value.")
+                top20 = sorted(investment_amounts.items(), key=lambda x: x[1], reverse=True)[:20]
+                investment_amounts = dict(top20)
+                tickers = list(investment_amounts.keys())
+
+            st.sidebar.success(f"✅ Loaded {len(tickers)} stocks from your portfolio!")
+
+        except Exception as e:
+            st.sidebar.error(f"Error reading file: {str(e)}. Try the template format.")
+            st.stop()
+
+    else:
+        st.info("👈 Upload your broker CSV file to get started.")
+        st.stop()
+
+else:
+    st.sidebar.markdown("Enter 2-20 stock tickers separated by commas.")
+    tickers_input = st.sidebar.text_input(
+        "Stock Tickers",
+        value="AAPL, MSFT, GOOGL, AMZN",
+        help="Enter ticker symbols separated by commas (e.g. AAPL, MSFT, GOOGL)"
+    )
+    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+
+    if len(tickers) < 2:
+        st.warning("Please enter at least 2 stock tickers to analyze portfolio risk.")
+        st.stop()
+
+    if len(tickers) > 20:
+        st.warning("Please enter no more than 20 tickers for best results.")
+        st.stop()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**Investment Amount per Stock ($):**")
+    for ticker in tickers:
+        amount = st.sidebar.number_input(
+            f"{ticker} ($)",
+            min_value=0,
+            max_value=10_000_000,
+            value=10_000,
+            step=1_000,
+            key=f"inv_{ticker}"
+        )
+        investment_amounts[ticker] = amount
 
 total_investment = sum(investment_amounts.values())
 
@@ -72,16 +252,7 @@ risk_free_rate = st.sidebar.slider(
     step=0.1
 ) / 100
 
-# Historical S&P 500 reference data (static)
-HISTORICAL_SP500 = {
-    "10-Year Avg Annual Return": "10.7%",
-    "20-Year Avg Annual Return": "9.8%",
-    "Historical Avg Volatility": "~15%",
-    "Historical Avg Sharpe": "~0.4–0.6",
-    "Source": "Damodaran NYU (1928–2024)"
-}
-
-# Fetch data
+# ── Data Fetching ──
 @st.cache_data(ttl=300)
 def fetch_portfolio_data(tickers, period):
     data = {}
@@ -159,53 +330,51 @@ def generate_flags(ann_return, ann_volatility, sharpe, max_drawdown,
                    valid_tickers, sectors, betas, individual_returns, corr_matrix):
     flags = []
 
-    # Concentration risk
     sector_weights = {}
     for t, w in zip(valid_tickers, weights):
         s = sectors.get(t, 'Unknown')
+        if s.startswith('Fund/ETF') or s == 'Unknown':
+            continue
         sector_weights[s] = sector_weights.get(s, 0) + w
     for sector, w in sector_weights.items():
         if w > 0.5:
             flags.append(("🔴 High Sector Concentration",
-                          f"{sector} makes up {w*100:.0f}% of your portfolio. Consider diversifying into other sectors."))
+                          f"{sector} makes up {w*100:.0f}% of your stock holdings. Consider diversifying into other sectors."))
 
-    # Single stock dominance
     for t, w in zip(valid_tickers, weights):
+        s = sectors.get(t, 'Unknown')
+        if s.startswith('Fund/ETF'):
+            continue
         if w > 0.4:
             flags.append(("🔴 Single Stock Overweight",
                           f"{t} makes up {w*100:.0f}% of your portfolio. Consider trimming this position."))
 
-    # High correlation pairs
     for i in range(len(valid_tickers)):
         for j in range(i+1, len(valid_tickers)):
             c = corr_matrix.iloc[i, j]
             if c > 0.75:
                 flags.append(("🟡 High Correlation Detected",
-                              f"{valid_tickers[i]} and {valid_tickers[j]} have a correlation of {c:.2f}. They may move together, reducing diversification benefit."))
+                              f"{valid_tickers[i]} and {valid_tickers[j]} have a correlation of {c:.2f}."))
 
-    # High beta
     for t in valid_tickers:
         b = betas.get(t)
         if isinstance(b, float) and b > 1.5:
             flags.append(("🟡 High Market Sensitivity",
-                          f"{t} has a beta of {b:.2f}, meaning it moves {b:.1f}x the market. This increases downside risk in market downturns."))
+                          f"{t} has a beta of {b:.2f}, meaning it moves {b:.1f}x the market."))
 
-    # Poor Sharpe
     if sharpe < 0.5:
         flags.append(("🔴 Poor Risk-Adjusted Return",
-                      f"Your Sharpe Ratio of {sharpe:.2f} is below 0.5. You are not being adequately compensated for the risk you're taking."))
+                      f"Your Sharpe Ratio of {sharpe:.2f} is below 0.5."))
 
-    # Large drawdown
     if max_drawdown < -0.25:
         flags.append(("🔴 Large Maximum Drawdown",
-                      f"Your portfolio has experienced a drawdown of {max_drawdown*100:.1f}%. This level of loss may be difficult to recover from."))
+                      f"Your portfolio has experienced a drawdown of {max_drawdown*100:.1f}%."))
 
-    # Underperforming stocks
     for t in valid_tickers:
         r = individual_returns.get(t, 0)
         if r < -10:
             flags.append(("🟡 Underperforming Position",
-                          f"{t} has returned {r:.1f}% this period. Consider reviewing whether this position still fits your strategy."))
+                          f"{t} has returned {r:.1f}% this period."))
 
     if not flags:
         flags.append(("🟢 No Major Issues Detected",
@@ -257,6 +426,9 @@ def get_ai_portfolio_analysis(tickers, weights, ann_return, ann_volatility, shar
         - Betas: {beta_str}
         - Returns: {returns_str}
 
+        Note: Some holdings may be mutual funds or ETFs (labeled as Fund/ETF).
+        Treat these as diversified index exposure when analyzing the portfolio.
+
         Provide:
         1. **Overall Assessment**: Compare risk/return to S&P 500 with specific numbers.
         2. **Diversification Analysis**: Comment on sector concentration, name specific stocks.
@@ -305,9 +477,29 @@ corr_matrix = metrics['correlation']
 upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
 avg_correlation = upper.stack().mean()
 
-sectors = {t: stock_info.get(t, {}).get('sector', 'N/A') for t in valid_tickers}
+# ── Sector detection with fund/ETF handling ──
+sectors = {}
+for t in valid_tickers:
+    info = stock_info.get(t, {})
+    sector = info.get('sector', None)
+    if not sector:
+        quote_type = info.get('quoteType', '')
+        if quote_type in ['MUTUALFUND', 'ETF']:
+            sector = f"Fund/ETF ({t})"
+        else:
+            sector = 'Unknown'
+    sectors[t] = sector
+
 betas = {t: round(stock_info.get(t, {}).get('beta', 0), 2) if stock_info.get(t, {}).get('beta') else 'N/A' for t in valid_tickers}
-individual_returns = {t: (prices[t].iloc[-1] / prices[t].iloc[0] - 1) * 100 for t in valid_tickers}
+
+# ── Period return with nan handling ──
+individual_returns = {}
+for t in valid_tickers:
+    try:
+        ret = (prices[t].iloc[-1] / prices[t].iloc[0] - 1) * 100
+        individual_returns[t] = ret if not np.isnan(ret) else 0.0
+    except:
+        individual_returns[t] = 0.0
 
 grade, grade_desc, grade_emoji = get_portfolio_grade(
     metrics['ann_return'], metrics['ann_volatility'],
@@ -388,7 +580,7 @@ fig_perf.add_trace(go.Scatter(x=normalized_benchmark.index, y=normalized_benchma
 fig_perf.update_layout(height=400, template='plotly_dark',
                         yaxis_title="Portfolio Value (Starting = 100)", xaxis_title="Date",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-st.plotly_chart(fig_perf, width="stretch")
+st.plotly_chart(fig_perf, use_container_width=True)
 
 st.markdown("---")
 
@@ -400,7 +592,7 @@ with col_left:
     pie_fig = px.pie(values=weights * 100, names=valid_tickers,
                      template='plotly_dark', hole=0.4)
     pie_fig.update_layout(height=350)
-    st.plotly_chart(pie_fig, width="stretch")
+    st.plotly_chart(pie_fig, use_container_width=True)
 
 with col_right:
     st.subheader("🏭 Sector Exposure")
@@ -418,7 +610,7 @@ with col_right:
                          color='Weight (%)', color_continuous_scale='Blues',
                          template='plotly_dark')
     fig_sector.update_layout(height=350)
-    st.plotly_chart(fig_sector, width="stretch")
+    st.plotly_chart(fig_sector, use_container_width=True)
 
 st.markdown("---")
 
@@ -427,10 +619,11 @@ st.subheader("🔧 What-If Rebalancing Simulator")
 st.markdown("Adjust weights below to simulate how rebalancing would affect your risk metrics.")
 
 sim_weights = []
-sim_cols = st.columns(len(valid_tickers))
+sim_cols = st.columns(min(len(valid_tickers), 8))
 for i, ticker in enumerate(valid_tickers):
     default_w = int(round(weights[i] * 100))
-    w = sim_cols[i].slider(f"{ticker} %", 0, 100, default_w, step=5, key=f"sim_{ticker}")
+    col_idx = i % len(sim_cols)
+    w = sim_cols[col_idx].slider(f"{ticker} %", 0, 100, default_w, step=5, key=f"sim_{ticker}")
     sim_weights.append(w)
 
 total_sim = sum(sim_weights)
@@ -474,7 +667,6 @@ p90 = np.percentile(mc_results, 90, axis=0)
 
 fig_mc = go.Figure()
 
-# Sample of individual paths
 for i in range(0, 500, 10):
     fig_mc.add_trace(go.Scatter(
         y=mc_results[i],
@@ -497,9 +689,8 @@ fig_mc.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
 )
 
-st.plotly_chart(fig_mc, width="stretch")
+st.plotly_chart(fig_mc, use_container_width=True)
 
-mc_final = mc_results[:, -1]
 mc1, mc2, mc3 = st.columns(3)
 mc1.metric("Worst Case (10th %ile)", f"{p10[-1]:.1f}",
            delta=f"{p10[-1]-100:.1f}% from start")
@@ -517,7 +708,7 @@ st.markdown("Correlation measures how stocks move together. Lower correlation = 
 fig_corr = px.imshow(metrics['correlation'], text_auto=".2f",
                       color_continuous_scale='RdBu_r', zmin=-1, zmax=1, aspect='auto')
 fig_corr.update_layout(height=400, template='plotly_dark')
-st.plotly_chart(fig_corr, width="stretch")
+st.plotly_chart(fig_corr, use_container_width=True)
 
 st.markdown("---")
 
@@ -533,8 +724,8 @@ with col_v:
     fig_vol = px.bar(vol_df, x='Annualized Volatility (%)', y='Ticker', orientation='h',
                       color='Annualized Volatility (%)', color_continuous_scale='RdYlGn_r',
                       template='plotly_dark')
-    fig_vol.update_layout(height=300)
-    st.plotly_chart(fig_vol, width="stretch")
+    fig_vol.update_layout(height=max(300, len(valid_tickers) * 40))
+    st.plotly_chart(fig_vol, use_container_width=True)
 
 with col_r:
     st.subheader("📉 Individual Stock Returns")
@@ -545,8 +736,8 @@ with col_r:
     fig_returns = px.bar(returns_df, x='Total Return (%)', y='Ticker', orientation='h',
                           color='Total Return (%)', color_continuous_scale='RdYlGn',
                           template='plotly_dark')
-    fig_returns.update_layout(height=300)
-    st.plotly_chart(fig_returns, width="stretch")
+    fig_returns.update_layout(height=max(300, len(valid_tickers) * 40))
+    st.plotly_chart(fig_returns, use_container_width=True)
 
 st.markdown("---")
 
@@ -582,20 +773,30 @@ st.subheader("📋 Portfolio Holdings Summary")
 holdings_data = []
 for ticker, weight in zip(valid_tickers, weights):
     info = stock_info.get(ticker, {})
+    period_return = individual_returns[ticker]
+
+    # Use Yahoo Finance price, fall back to broker CSV price
+    try:
+        current_price = prices[ticker].iloc[-1]
+        if np.isnan(current_price):
+            current_price = csv_prices.get(ticker, float('nan'))
+    except:
+        current_price = csv_prices.get(ticker, float('nan'))
+
     holdings_data.append({
         'Ticker': ticker,
         'Company': info.get('longName', ticker),
-        'Sector': info.get('sector', 'N/A'),
+        'Sector': sectors.get(ticker, 'N/A'),
         'Weight': f"{weight*100:.1f}%",
-        'Invested': f"${valid_investments[ticker]:,}",
-        'Current Price': f"${prices[ticker].iloc[-1]:.2f}",
-        'Period Return': f"{individual_returns[ticker]:.1f}%",
+        'Invested': f"${valid_investments[ticker]:,.2f}",
+        'Current Price': f"${current_price:.2f}" if not np.isnan(current_price) else 'N/A',
+        'Period Return': f"{period_return:.1f}%" if period_return != 0.0 else 'N/A',
         'Market Cap': f"${info.get('marketCap', 0)/1e9:.1f}B" if info.get('marketCap') else 'N/A',
         'P/E Ratio': f"{info.get('trailingPE', 'N/A'):.1f}" if isinstance(info.get('trailingPE'), float) else 'N/A',
         'Beta': f"{info.get('beta', 'N/A'):.2f}" if isinstance(info.get('beta'), float) else 'N/A'
     })
 
-st.dataframe(pd.DataFrame(holdings_data), width="stretch")
+st.dataframe(pd.DataFrame(holdings_data), use_container_width=True)
 
 # ── Footer ──
 st.markdown("---")

@@ -1,9 +1,11 @@
 # AI Portfolio Risk Analyzer
 
 ## Description
-The AI Portfolio Risk Analyzer is an interactive, real-time dashboard built with Streamlit. It allows users to input a custom stock portfolio, dynamically fetches real-time market data via the Yahoo Finance API, and calculates advanced risk metrics (Annualized Return, Volatility, Sharpe Ratio, Max Drawdown). The dashboard also uses OpenAI's GPT models to synthesize these quantitative metrics into actionable, qualitative business insights.
+The AI Portfolio Risk Analyzer is an interactive, real-time financial dashboard that evaluates the performance and risk profile of a custom stock portfolio. It connects to the Yahoo Finance API to load live market data and calculates advanced risk metrics (Annualized Return, Volatility, Sharpe Ratio, Max Drawdown). The dashboard also uses OpenAI's GPT models to synthesize these quantitative metrics into actionable, qualitative business insights.
 
 ## Features
+- **Broker CSV Upload**: Upload your portfolio directly from Fidelity, Schwab, Robinhood, E*Trade, and most brokers. Auto-detects ticker and amount columns — no reformatting required.
+- **Mutual Fund & ETF Support**: Handles mutual funds and ETFs in uploaded portfolios, using broker-provided prices as fallback data.
 - **Real-Time Data Integration**: Fetches the latest stock prices and historical data using `yfinance`.
 - **Portfolio Grading**: Automatically grades your portfolio A–D based on Sharpe Ratio, diversification, returns, and drawdown.
 - **Health Alerts**: Automatically flags concentration risk, high correlation, high beta, and underperforming positions.
@@ -13,7 +15,7 @@ The AI Portfolio Risk Analyzer is an interactive, real-time dashboard built with
 - **Sector Exposure Analysis**: Visualizes portfolio concentration by sector.
 - **Historical Benchmark Reference**: Compares your portfolio against long-term S&P 500 averages (NYU Damodaran, 1928–2024).
 - **AI-Powered Analysis**: Leverages OpenAI's GPT to provide specific, ticker-level insights and rebalancing recommendations.
-- **Interactive Visualizations**: Uses Plotly to render responsive charts including candlestick, heatmap, and Monte Carlo fan charts.
+- **Interactive Visualizations**: Uses Plotly to render responsive charts including performance, heatmap, and Monte Carlo fan charts.
 
 ## Installation
 
@@ -60,6 +62,19 @@ OPENAI_API_KEY = "your_openai_api_key_here"
 streamlit run app.py
 ```
 The dashboard will open automatically at `http://localhost:8501`.
+
+## How to Upload Your Broker CSV
+
+Most major brokers allow you to export your portfolio as a CSV file:
+
+- **Fidelity**: Accounts → Portfolio → Download (CSV)
+- **Schwab**: Positions → Export
+- **Robinhood**: Account → Statements → Export
+- **E*Trade**: Portfolio → Download
+
+Once exported, simply upload the file using the "Upload Broker CSV" option in the sidebar. The app will automatically detect your ticker and amount columns. No reformatting is required for most broker exports.
+
+> **Note:** Mutual funds (e.g., FXAIX) will show broker-provided prices in the holdings table. Historical performance data for mutual funds may be limited.
 
 ## Deployment
 This app is deployed on Streamlit Cloud. To deploy your own instance:
