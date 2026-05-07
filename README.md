@@ -1,12 +1,12 @@
 # AI Portfolio Risk Analyzer
 
 ## Description
-The AI Portfolio Risk Analyzer is an interactive, real-time financial dashboard that evaluates the performance and risk profile of a custom stock portfolio. It connects to the Yahoo Finance API to load live market data and calculates advanced risk metrics (Annualized Return, Volatility, Sharpe Ratio, Max Drawdown). The dashboard also uses OpenAI's GPT models to synthesize these quantitative metrics into actionable, qualitative business insights.
+The AI Portfolio Risk Analyzer is an interactive, real-time financial dashboard that evaluates the performance and risk profile of a custom stock portfolio. It connects to the Polygon.io API to load live market data and calculates advanced risk metrics (Annualized Return, Volatility, Sharpe Ratio, Max Drawdown). The dashboard also uses OpenAI's GPT models to synthesize these quantitative metrics into actionable, qualitative business insights.
 
 ## Features
 - **Broker CSV Upload**: Upload your portfolio directly from Fidelity, Schwab, Robinhood, E*Trade, and most brokers. Auto-detects ticker and amount columns — no reformatting required.
 - **Mutual Fund & ETF Support**: Handles mutual funds and ETFs in uploaded portfolios, using broker-provided prices as fallback data.
-- **Real-Time Data Integration**: Fetches the latest stock prices and historical data using `yfinance`.
+- **Real-Time Data Integration**: Fetches the latest stock prices and historical data using Polygon.io.
 - **Portfolio Grading**: Automatically grades your portfolio A–D based on Sharpe Ratio, diversification, returns, and drawdown.
 - **Health Alerts**: Automatically flags concentration risk, high correlation, high beta, and underperforming positions.
 - **Advanced Risk Metrics**: Calculates Sharpe ratios, beta, correlation matrices, and a diversification score.
@@ -43,18 +43,20 @@ source venv/bin/activate  # On Mac/Linux
 pip install -r requirements.txt
 ```
 
-### 4. Set up your OpenAI API key
-You will need an OpenAI API key to use the AI analysis feature.
+### 4. Set up your API keys
+You will need an OpenAI API key and a Polygon.io API key.
 
-**Option A — Environment variable (local development):**
+**Option A — Environment variables (local development):**
 ```bash
 export OPENAI_API_KEY="your_openai_api_key_here"
+export POLYGON_API_KEY="your_polygon_api_key_here"
 ```
 
 **Option B — Streamlit secrets (for Streamlit Cloud deployment):**
 Create a file at `.streamlit/secrets.toml`:
 ```toml
 OPENAI_API_KEY = "your_openai_api_key_here"
+POLYGON_API_KEY = "your_polygon_api_key_here"
 ```
 
 ### 5. Run the application
@@ -74,23 +76,23 @@ Most major brokers allow you to export your portfolio as a CSV file:
 
 Once exported, simply upload the file using the "Upload Broker CSV" option in the sidebar. The app will automatically detect your ticker and amount columns. No reformatting is required for most broker exports.
 
-> **Note:** Mutual funds (e.g., FXAIX) will show broker-provided prices in the holdings table. Historical performance data for mutual funds may be limited.
+> **Note:** Mutual funds (e.g., FXAIX) may show limited data as not all mutual funds are covered by Polygon.io.
 
 ## Deployment
 This app is deployed on Streamlit Cloud. To deploy your own instance:
 1. Push this repository to GitHub (public)
 2. Go to [share.streamlit.io](https://share.streamlit.io)
 3. Connect your GitHub repo
-4. Add your `OPENAI_API_KEY` in the Streamlit Cloud secrets manager
+4. Add your `OPENAI_API_KEY` and `POLYGON_API_KEY` in the Streamlit Cloud secrets manager
 5. Click Deploy
 
 ## Tech Stack
 - **Frontend/Framework**: Streamlit
-- **Data Source**: Yahoo Finance (`yfinance`)
+- **Data Source**: Polygon.io (massive.com)
 - **AI Model**: OpenAI GPT-5.4-mini
 - **Visualizations**: Plotly
 - **Data Processing**: Pandas, NumPy
 - **IDE**: Google Antigravity
 
 ## Disclaimer
-This dashboard is for informational and educational purposes only. Data is provided by Yahoo Finance and may be delayed or inaccurate. AI analysis is generated automatically and does not constitute professional financial, legal, or investment advice. Past performance is not indicative of future results. Monte Carlo simulations are based on historical data and do not guarantee future performance. Users rely on this dashboard at their own risk. This tool is not endorsed by the University of North Carolina at Chapel Hill.
+This dashboard is for informational and educational purposes only. Data is provided by Polygon.io and may be delayed or inaccurate. AI analysis is generated automatically and does not constitute professional financial, legal, or investment advice. Past performance is not indicative of future results. Monte Carlo simulations are based on historical data and do not guarantee future performance. Users rely on this dashboard at their own risk. This tool is not endorsed by the University of North Carolina at Chapel Hill.

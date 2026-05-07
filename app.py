@@ -1,5 +1,4 @@
 import streamlit as st
-import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
@@ -8,6 +7,7 @@ from openai import OpenAI
 import io
 import time
 import requests
+from datetime import datetime, timedelta
 
 # Page configuration
 st.set_page_config(
@@ -29,13 +29,257 @@ HISTORICAL_SP500 = {
     "Source": "Damodaran NYU (1928–2024)"
 }
 
-# ── Browser session to bypass rate limiting ──
-def get_session():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-    return session
+# ── SIC to clean sector name mapping ──
+SIC_TO_SECTOR = {
+    # Technology
+    'ELECTRONIC COMPUTERS': 'Technology',
+    'SERVICES-PREPACKAGED SOFTWARE': 'Technology',
+    'SERVICES-COMPUTER PROGRAMMING, DATA PROCESSING, ETC.': 'Technology',
+    'SEMICONDUCTORS AND RELATED DEVICES': 'Technology',
+    'TELEPHONE & TELEGRAPH APPARATUS': 'Technology',
+    'RADIO & TV BROADCASTING & COMMUNICATIONS EQUIPMENT': 'Technology',
+    'COMPUTER COMMUNICATIONS EQUIPMENT': 'Technology',
+    'SERVICES-COMPUTER INTEGRATED SYSTEMS DESIGN': 'Technology',
+    'SERVICES-MISC BUSINESS SERVICES': 'Technology',
+    'SERVICES-COMPUTER RENTAL & LEASING': 'Technology',
+    'SERVICES-BUSINESS SERVICES, NEC': 'Technology',
+    'SERVICES-COMPUTER PROCESSING AND DATA PREPARATION': 'Technology',
+    'SERVICES-SERVICES, NEC': 'Technology',
+    'INSTRUMENTS FOR MEASURING': 'Technology',
+    'PRINTED CIRCUIT BOARDS': 'Technology',
+    'ELECTRONIC COMPONENTS, NEC': 'Technology',
+    'CALCULATING & ACCOUNTING MACHINES': 'Technology',
+    'OFFICE MACHINES, NEC': 'Technology',
+
+    # Communication Services
+    'PATENT OWNERS AND LESSORS': 'Communication Services',
+    'SERVICES-TELEPHONE COMMUNICATIONS (NO RADIO TELEPHONE)': 'Communication Services',
+    'TELEVISION BROADCASTING STATIONS': 'Communication Services',
+    'SERVICES-ONLINE INFORMATION SERVICES': 'Communication Services',
+    'SERVICES-INTERNET SERVICES': 'Communication Services',
+    'SERVICES-ADVERTISING': 'Communication Services',
+    'PHONOGRAPH RECORDS, PRERECORDED AUDIO TAPES & DISKS': 'Communication Services',
+    'SERVICES-VIDEO TAPE RENTAL & RETAIL': 'Communication Services',
+    'RADIO BROADCASTING STATIONS': 'Communication Services',
+    'CABLE & OTHER PAY TELEVISION SERVICES': 'Communication Services',
+    'TELEPHONE COMMUNICATIONS (NO RADIO TELEPHONE)': 'Communication Services',
+    'SERVICES-COMPUTER PROGRAMMING': 'Communication Services',
+    'COMMUNICATION SERVICES, NEC': 'Communication Services',
+
+    # Consumer Cyclical
+    'RETAIL-CATALOG & MAIL-ORDER HOUSES': 'Consumer Cyclical',
+    'RETAIL-VARIETY STORES': 'Consumer Cyclical',
+    'RETAIL-EATING & DRINKING PLACES': 'Consumer Cyclical',
+    'RETAIL-EATING PLACES': 'Consumer Cyclical',
+    'RETAIL-AUTO DEALERS & GAS STATIONS': 'Consumer Cyclical',
+    'SERVICES-HOTELS & MOTELS': 'Consumer Cyclical',
+    'SERVICES-AMUSEMENT & RECREATION SERVICES': 'Consumer Cyclical',
+    'RETAIL-HOBBY, TOY & GAME SHOPS': 'Consumer Cyclical',
+    'RETAIL-APPAREL & ACCESSORY STORES': 'Consumer Cyclical',
+    'RETAIL-HOME FURNITURE, FURNISHINGS & EQUIPMENT STORES': 'Consumer Cyclical',
+    'RETAIL-RETAIL STORES, NEC': 'Consumer Cyclical',
+    'RETAIL-NONSTORE RETAILERS': 'Consumer Cyclical',
+    'RETAIL-SPORTING GOODS STORES & BICYCLE SHOPS': 'Consumer Cyclical',
+    'RETAIL-SHOE STORES': 'Consumer Cyclical',
+    'RETAIL-JEWELRY STORES': 'Consumer Cyclical',
+    'MOTOR VEHICLES & PASSENGER CAR BODIES': 'Consumer Cyclical',
+    'HOUSEHOLD FURNITURE': 'Consumer Cyclical',
+    'SERVICES-MISC AMUSEMENT & RECREATION': 'Consumer Cyclical',
+    'SERVICES-VIDEO TAPE RENTAL': 'Consumer Cyclical',
+
+    # Consumer Defensive
+    'RETAIL-GROCERY STORES': 'Consumer Defensive',
+    'RETAIL-DRUG STORES AND PROPRIETARY STORES': 'Consumer Defensive',
+    'FOOD AND KINDRED PRODUCTS': 'Consumer Defensive',
+    'TOBACCO PRODUCTS': 'Consumer Defensive',
+    'BEVERAGES': 'Consumer Defensive',
+    'NONDURABLE GOODS': 'Consumer Defensive',
+    'SOAP, DETERGENTS, CLEANING PREPARATIONS': 'Consumer Defensive',
+    'GRAIN MILL PRODUCTS': 'Consumer Defensive',
+    'DAIRY PRODUCTS': 'Consumer Defensive',
+    'RETAIL-FOOD STORES': 'Consumer Defensive',
+
+    # Healthcare
+    'PHARMACEUTICAL PREPARATIONS': 'Healthcare',
+    'SERVICES-HEALTH SERVICES': 'Healthcare',
+    'SERVICES-HOSPITALS': 'Healthcare',
+    'SERVICES-MEDICAL LABORATORIES': 'Healthcare',
+    'SURGICAL & MEDICAL INSTRUMENTS & APPARATUS': 'Healthcare',
+    'ELECTROMEDICAL & ELECTROTHERAPEUTIC APPARATUS': 'Healthcare',
+    'PHARMACEUTICAL PREPARATIONS (NO BIOLOGICAL)': 'Healthcare',
+    'SERVICES-SPECIALTY OUTPATIENT FACILITIES': 'Healthcare',
+    'SERVICES-HOME HEALTH CARE SERVICES': 'Healthcare',
+    'IN VITRO & IN VIVO DIAGNOSTIC SUBSTANCES': 'Healthcare',
+    'BIOLOGICAL PRODUCTS (NO DIAGNOSTIC SUBSTANCES)': 'Healthcare',
+    'DENTAL EQUIPMENT & SUPPLIES': 'Healthcare',
+    'ORTHOPEDIC, PROSTHETIC & SURGICAL APPLIANCES': 'Healthcare',
+    'SERVICES-OFFICES & CLINICS OF DOCTORS OF MEDICINE': 'Healthcare',
+    'MEDICINAL CHEMICALS & BOTANICAL PRODUCTS': 'Healthcare',
+
+    # Energy
+    'CRUDE PETROLEUM & NATURAL GAS': 'Energy',
+    'OIL AND GAS FIELD SERVICES, NEC': 'Energy',
+    'PETROLEUM REFINING': 'Energy',
+    'NATURAL GAS DISTRIBUTION': 'Energy',
+    'COAL MINING': 'Energy',
+    'OIL & GAS FIELD MACHINERY & EQUIPMENT': 'Energy',
+    'DRILLING OIL & GAS WELLS': 'Energy',
+
+    # Financial Services
+    'STATE COMMERCIAL BANKS-FEDERAL RESERVE MEMBERS': 'Financial Services',
+    'NATIONAL COMMERCIAL BANKS': 'Financial Services',
+    'SERVICES-INVESTMENT ADVICE': 'Financial Services',
+    'FIRE, MARINE & CASUALTY INSURANCE': 'Financial Services',
+    'LIFE INSURANCE': 'Financial Services',
+    'SECURITY & COMMODITY BROKERS, DEALERS, EXCHANGES & SERVICES': 'Financial Services',
+    'BLANK CHECKS': 'Financial Services',
+    'SAVINGS INSTITUTION, FEDERALLY CHARTERED': 'Financial Services',
+    'PERSONAL CREDIT INSTITUTIONS': 'Financial Services',
+    'MORTGAGE BANKERS, LOAN CORRESPONDENTS': 'Financial Services',
+    'INSURANCE AGENTS, BROKERS & SERVICE': 'Financial Services',
+    'SURETY INSURANCE': 'Financial Services',
+    'ACCIDENT AND HEALTH INSURANCE': 'Financial Services',
+    'INVESTMENT OFFICES, NEC': 'Financial Services',
+    'SHORT-TERM BUSINESS CREDIT INSTITUTIONS': 'Financial Services',
+    'FINANCE SERVICES': 'Financial Services',
+
+    # Industrials
+    'AIRCRAFT & PARTS': 'Industrials',
+    'AIRCRAFT ENGINES & ENGINE PARTS': 'Industrials',
+    'GUIDED MISSILES & SPACE VEHICLES': 'Industrials',
+    'RAILROAD EQUIPMENT': 'Industrials',
+    'TRUCKING & COURIER SERVICES (NO AIR)': 'Industrials',
+    'AIR TRANSPORTATION, SCHEDULED': 'Industrials',
+    'SERVICES-ENGINEERING SERVICES': 'Industrials',
+    'INDUSTRIAL & COMMERCIAL MACHINERY & EQUIPMENT': 'Industrials',
+    'SERVICES-EQUIPMENT RENTAL & LEASING': 'Industrials',
+    'SERVICES-MANAGEMENT CONSULTING SERVICES': 'Industrials',
+    'SHIP BUILDING & REPAIRING': 'Industrials',
+    'GENERAL BUILDING CONTRACTORS-INDUSTRIAL BUILDINGS': 'Industrials',
+    'SPECIAL INDUSTRY MACHINERY': 'Industrials',
+    'CONSTRUCTION MACHINERY & EQUIPMENT': 'Industrials',
+    'INDUSTRIAL INSTRUMENTS FOR MEASUREMENT': 'Industrials',
+    'SERVICES-COURIER SERVICES (NO AIR)': 'Industrials',
+    'SERVICES-AIR TRANSPORTATION, NONSCHEDULED': 'Industrials',
+    'WATER TRANSPORTATION': 'Industrials',
+    'TRANSPORTATION SERVICES': 'Industrials',
+    'MEASURING & CONTROLLING DEVICES, NEC': 'Industrials',
+
+    # Basic Materials
+    'STEEL WORKS, BLAST FURNACES': 'Basic Materials',
+    'MINING & QUARRYING OF NONMETALLIC MINERALS': 'Basic Materials',
+    'CHEMICALS AND ALLIED PRODUCTS': 'Basic Materials',
+    'PLASTICS MATERIALS, SYNTHETIC RESINS': 'Basic Materials',
+    'PAPER AND ALLIED PRODUCTS': 'Basic Materials',
+    'LUMBER & WOOD PRODUCTS': 'Basic Materials',
+    'METAL MINING': 'Basic Materials',
+    'GOLD AND SILVER ORES MINING': 'Basic Materials',
+    'COPPER ORES': 'Basic Materials',
+    'INDUSTRIAL CHEMICALS & SYNTHETICS': 'Basic Materials',
+
+    # Utilities
+    'ELECTRIC SERVICES': 'Utilities',
+    'GAS AND OTHER SERVICES COMBINED': 'Utilities',
+    'WATER SUPPLY': 'Utilities',
+    'NUCLEAR ENERGY': 'Utilities',
+    'ELECTRIC & OTHER SERVICES COMBINED': 'Utilities',
+    'NATURAL GAS TRANSMISSION': 'Utilities',
+    'SANITARY SERVICES': 'Utilities',
+
+    # Real Estate
+    'REAL ESTATE': 'Real Estate',
+    'REAL ESTATE INVESTMENT TRUSTS': 'Real Estate',
+    'LAND SUBDIVIDERS & DEVELOPERS (NO CEMETERIES)': 'Real Estate',
+    'OPERATIVE BUILDERS': 'Real Estate',
+    'REAL ESTATE DEALERS (FOR THEIR OWN ACCOUNT)': 'Real Estate',
+}
+
+def clean_sector_name(sic_description):
+    if not sic_description:
+        return None
+    upper = sic_description.upper().strip()
+    return SIC_TO_SECTOR.get(upper, sic_description.title())
+
+# ── Polygon.io API key ──
+try:
+    POLYGON_API_KEY = st.secrets["POLYGON_API_KEY"]
+except Exception:
+    import os
+    POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY", "")
+
+# ── Polygon.io data fetching ──
+@st.cache_data(ttl=900)
+def fetch_stock_data_polygon(ticker, period):
+    try:
+        period_days = {
+            '3mo': 90, '6mo': 180, '1y': 365,
+            '2y': 730, '5y': 1825
+        }
+        days = period_days.get(period, 365)
+        end_date = datetime.today().strftime('%Y-%m-%d')
+        start_date = (datetime.today() - timedelta(days=days)).strftime('%Y-%m-%d')
+
+        url = f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_API_KEY}"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+
+        if data.get('status') == 'ERROR' or 'results' not in data:
+            return pd.Series()
+
+        results = data['results']
+        df = pd.DataFrame(results)
+        df['date'] = pd.to_datetime(df['t'], unit='ms')
+        df = df.set_index('date')
+        return df['c']
+
+    except Exception:
+        return pd.Series()
+
+@st.cache_data(ttl=900)
+def fetch_stock_info_polygon(ticker):
+    try:
+        url = f"https://api.polygon.io/v3/reference/tickers/{ticker}?apiKey={POLYGON_API_KEY}"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+
+        if 'results' not in data:
+            return {}
+
+        res = data['results']
+        raw_sector = res.get('sic_description', None)
+        clean_sector = clean_sector_name(raw_sector)
+
+        return {
+            'longName': res.get('name', ticker),
+            'sector': clean_sector,
+            'industry': raw_sector,
+            'marketCap': res.get('market_cap', None),
+            'trailingPE': None,
+            'beta': None,
+            'quoteType': 'EQUITY'
+        }
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=900)
+def fetch_portfolio_data(tickers, period):
+    data = {}
+    info = {}
+    failed = []
+    for i, ticker in enumerate(tickers):
+        if i > 0 and i % 2 == 0:
+            time.sleep(25)
+        close = fetch_stock_data_polygon(ticker, period)
+        if not close.empty:
+            data[ticker] = close
+            info[ticker] = fetch_stock_info_polygon(ticker)
+        else:
+            failed.append(ticker)
+    return pd.DataFrame(data), info, failed
+
+@st.cache_data(ttl=900)
+def fetch_benchmark(period):
+    return fetch_stock_data_polygon("SPY", period)
 
 # ── Column detection keywords ──
 TICKER_KEYWORDS = ['ticker', 'symbol', 'stock', 'security', 'instrument', 'asset']
@@ -194,10 +438,10 @@ if input_method == "📂 Upload Broker CSV":
                 st.sidebar.error("Could not find enough valid stock tickers. Please check your file or use the template.")
                 st.stop()
 
-            if len(tickers) > 20:
-                st.sidebar.warning(f"Found {len(tickers)} stocks — showing top 20 by value.")
-                top20 = sorted(investment_amounts.items(), key=lambda x: x[1], reverse=True)[:20]
-                investment_amounts = dict(top20)
+            if len(tickers) > 10:
+                st.sidebar.warning(f"Found {len(tickers)} stocks — showing top 10 by value.")
+                top10 = sorted(investment_amounts.items(), key=lambda x: x[1], reverse=True)[:10]
+                investment_amounts = dict(top10)
                 tickers = list(investment_amounts.keys())
 
             st.sidebar.success(f"✅ Loaded {len(tickers)} stocks from your portfolio!")
@@ -211,7 +455,7 @@ if input_method == "📂 Upload Broker CSV":
         st.stop()
 
 else:
-    st.sidebar.markdown("Enter 2-20 stock tickers separated by commas.")
+    st.sidebar.markdown("Enter 2-10 stock tickers separated by commas.")
     tickers_input = st.sidebar.text_input(
         "Stock Tickers",
         value="AAPL, MSFT, GOOGL, AMZN",
@@ -223,8 +467,8 @@ else:
         st.warning("Please enter at least 2 stock tickers to analyze portfolio risk.")
         st.stop()
 
-    if len(tickers) > 20:
-        st.warning("Please enter no more than 20 tickers for best results.")
+    if len(tickers) > 10:
+        st.warning("Please enter no more than 10 tickers for best results.")
         st.stop()
 
     st.sidebar.markdown("---")
@@ -261,40 +505,25 @@ risk_free_rate = st.sidebar.slider(
     step=0.1
 ) / 100
 
-# ── Data Fetching with browser session and retry logic ──
-@st.cache_data(ttl=900)
-def fetch_portfolio_data(tickers, period):
-    session = get_session()
-    data = {}
-    info = {}
-    for ticker in tickers:
-        for attempt in range(3):
-            try:
-                stock = yf.Ticker(ticker, session=session)
-                hist = stock.history(period=period)
-                if not hist.empty:
-                    data[ticker] = hist['Close']
-                    info[ticker] = stock.info
-                break
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(3)
-                else:
-                    st.warning(f"Could not fetch data for {ticker} after 3 attempts.")
-    return pd.DataFrame(data), info
+# ── Fetch Data ──
+with st.spinner("Fetching real-time market data... First load may take 1-2 minutes for larger portfolios. Data is cached for 15 minutes after that."):
+    prices, stock_info, failed_tickers = fetch_portfolio_data(tuple(tickers), period)
+    benchmark = fetch_benchmark(period)
 
-@st.cache_data(ttl=900)
-def fetch_benchmark(period):
-    session = get_session()
-    for attempt in range(3):
-        try:
-            sp500 = yf.Ticker("^GSPC", session=session)
-            hist = sp500.history(period=period)['Close']
-            return hist
-        except Exception:
-            if attempt < 2:
-                time.sleep(3)
-    return pd.Series()
+for ticker in failed_tickers:
+    st.warning(f"Could not fetch data for {ticker}. Check the ticker symbol.")
+
+valid_tickers = list(prices.columns)
+if len(valid_tickers) < 2:
+    st.error("Could not fetch enough data. Please check your ticker symbols or try again shortly.")
+    st.stop()
+
+valid_investments = {t: investment_amounts.get(t, 10000) for t in valid_tickers}
+total_valid = sum(valid_investments.values())
+if total_valid == 0:
+    weights = np.array([1/len(valid_tickers)] * len(valid_tickers))
+else:
+    weights = np.array([valid_investments[t] / total_valid for t in valid_tickers])
 
 def calculate_metrics(prices, weights, risk_free_rate):
     returns = prices.pct_change().dropna()
@@ -352,7 +581,6 @@ def generate_flags(ann_return, ann_volatility, sharpe, max_drawdown,
                    diversification_score, avg_correlation, weights,
                    valid_tickers, sectors, betas, individual_returns, corr_matrix):
     flags = []
-
     sector_weights = {}
     for t, w in zip(valid_tickers, weights):
         s = sectors.get(t, 'Unknown')
@@ -363,7 +591,6 @@ def generate_flags(ann_return, ann_volatility, sharpe, max_drawdown,
         if w > 0.5:
             flags.append(("🔴 High Sector Concentration",
                           f"{sector} makes up {w*100:.0f}% of your stock holdings. Consider diversifying into other sectors."))
-
     for t, w in zip(valid_tickers, weights):
         s = sectors.get(t, 'Unknown')
         if s.startswith('Fund/ETF'):
@@ -371,38 +598,31 @@ def generate_flags(ann_return, ann_volatility, sharpe, max_drawdown,
         if w > 0.4:
             flags.append(("🔴 Single Stock Overweight",
                           f"{t} makes up {w*100:.0f}% of your portfolio. Consider trimming this position."))
-
     for i in range(len(valid_tickers)):
         for j in range(i+1, len(valid_tickers)):
             c = corr_matrix.iloc[i, j]
             if c > 0.75:
                 flags.append(("🟡 High Correlation Detected",
                               f"{valid_tickers[i]} and {valid_tickers[j]} have a correlation of {c:.2f}."))
-
     for t in valid_tickers:
         b = betas.get(t)
         if isinstance(b, float) and b > 1.5:
             flags.append(("🟡 High Market Sensitivity",
                           f"{t} has a beta of {b:.2f}, meaning it moves {b:.1f}x the market."))
-
     if sharpe < 0.5:
         flags.append(("🔴 Poor Risk-Adjusted Return",
                       f"Your Sharpe Ratio of {sharpe:.2f} is below 0.5."))
-
     if max_drawdown < -0.25:
         flags.append(("🔴 Large Maximum Drawdown",
                       f"Your portfolio has experienced a drawdown of {max_drawdown*100:.1f}%."))
-
     for t in valid_tickers:
         r = individual_returns.get(t, 0)
         if r < -10:
             flags.append(("🟡 Underperforming Position",
                           f"{t} has returned {r:.1f}% this period."))
-
     if not flags:
         flags.append(("🟢 No Major Issues Detected",
                       "Your portfolio looks healthy based on the current metrics. Continue to monitor regularly."))
-
     return flags
 
 def run_monte_carlo(portfolio_returns, n_simulations=500, n_days=252):
@@ -476,23 +696,6 @@ def get_ai_portfolio_analysis(tickers, weights, ann_return, ann_volatility, shar
     except Exception as e:
         return f"AI analysis unavailable: {str(e)}"
 
-# ── Fetch Data ──
-with st.spinner("Fetching real-time market data..."):
-    prices, stock_info = fetch_portfolio_data(tuple(tickers), period)
-    benchmark = fetch_benchmark(period)
-
-valid_tickers = list(prices.columns)
-if len(valid_tickers) < 2:
-    st.error("Could not fetch enough data. Yahoo Finance may be temporarily rate limited. Please wait a few minutes and refresh.")
-    st.stop()
-
-valid_investments = {t: investment_amounts.get(t, 10000) for t in valid_tickers}
-total_valid = sum(valid_investments.values())
-if total_valid == 0:
-    weights = np.array([1/len(valid_tickers)] * len(valid_tickers))
-else:
-    weights = np.array([valid_investments[t] / total_valid for t in valid_tickers])
-
 metrics = calculate_metrics(prices, weights, risk_free_rate)
 diversification_score = calculate_diversification_score(metrics['correlation'])
 
@@ -500,7 +703,6 @@ corr_matrix = metrics['correlation']
 upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
 avg_correlation = upper.stack().mean()
 
-# ── Sector detection with fund/ETF handling ──
 sectors = {}
 for t in valid_tickers:
     info = stock_info.get(t, {})
@@ -515,7 +717,6 @@ for t in valid_tickers:
 
 betas = {t: round(stock_info.get(t, {}).get('beta', 0), 2) if stock_info.get(t, {}).get('beta') else 'N/A' for t in valid_tickers}
 
-# ── Period return with nan handling ──
 individual_returns = {}
 for t in valid_tickers:
     try:
@@ -599,7 +800,7 @@ fig_perf = go.Figure()
 fig_perf.add_trace(go.Scatter(x=normalized_portfolio.index, y=normalized_portfolio.values,
                                name="Your Portfolio", line=dict(color='#00CC96', width=2)))
 fig_perf.add_trace(go.Scatter(x=normalized_benchmark.index, y=normalized_benchmark.values,
-                               name="S&P 500", line=dict(color='#EF553B', width=2, dash='dash')))
+                               name="S&P 500 (SPY)", line=dict(color='#EF553B', width=2, dash='dash')))
 fig_perf.update_layout(height=400, template='plotly_dark',
                         yaxis_title="Portfolio Value (Starting = 100)", xaxis_title="Date",
                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
@@ -623,12 +824,10 @@ with col_right:
     for t, w in zip(valid_tickers, weights):
         s = sectors.get(t, 'Unknown')
         sector_weights[s] = sector_weights.get(s, 0) + w * 100
-
     sector_df = pd.DataFrame({
         'Sector': list(sector_weights.keys()),
         'Weight (%)': list(sector_weights.values())
     }).sort_values('Weight (%)', ascending=True)
-
     fig_sector = px.bar(sector_df, x='Weight (%)', y='Sector', orientation='h',
                          color='Weight (%)', color_continuous_scale='Blues',
                          template='plotly_dark')
@@ -655,17 +854,14 @@ if total_sim == 0:
     st.warning("Total weight is 0%. Please adjust the sliders.")
 else:
     normalized_sim_weights = np.array([w / total_sim for w in sim_weights])
-
     if total_sim != 100:
         st.info(f"Weights sum to {total_sim}% — automatically normalized to 100%.")
-
     sim_metrics = calculate_metrics(prices, normalized_sim_weights, risk_free_rate)
     sim_div = calculate_diversification_score(sim_metrics['correlation'])
     sim_grade, sim_grade_desc, sim_emoji = get_portfolio_grade(
         sim_metrics['ann_return'], sim_metrics['ann_volatility'],
         sim_metrics['sharpe'], sim_div, sim_metrics['max_drawdown']
     )
-
     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
     sc1.metric("Simulated Return", f"{sim_metrics['ann_return']*100:.2f}%",
                delta=f"{(sim_metrics['ann_return'] - metrics['ann_return'])*100:.2f}% vs current")
@@ -683,44 +879,35 @@ st.subheader("🎲 Monte Carlo Simulation — 1-Year Outlook")
 st.markdown("500 simulated portfolio paths based on historical return and volatility. Shows range of possible outcomes.")
 
 mc_results = run_monte_carlo(metrics['portfolio_returns'], n_simulations=500, n_days=252)
-
 p10 = np.percentile(mc_results, 10, axis=0)
 p50 = np.percentile(mc_results, 50, axis=0)
 p90 = np.percentile(mc_results, 90, axis=0)
 
 fig_mc = go.Figure()
-
 for i in range(0, 500, 10):
     fig_mc.add_trace(go.Scatter(
-        y=mc_results[i],
-        mode='lines',
+        y=mc_results[i], mode='lines',
         line=dict(color='rgba(100, 149, 237, 0.1)', width=1),
         showlegend=False
     ))
-
 fig_mc.add_trace(go.Scatter(y=p90, name='90th Percentile (Best Case)',
                              line=dict(color='#00CC96', width=2)))
 fig_mc.add_trace(go.Scatter(y=p50, name='50th Percentile (Median)',
                              line=dict(color='white', width=2)))
 fig_mc.add_trace(go.Scatter(y=p10, name='10th Percentile (Worst Case)',
                              line=dict(color='#EF553B', width=2)))
-
 fig_mc.update_layout(
     height=450, template='plotly_dark',
     yaxis_title="Portfolio Value (Starting = 100)",
     xaxis_title="Trading Days",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
 )
-
 st.plotly_chart(fig_mc, use_container_width=True)
 
 mc1, mc2, mc3 = st.columns(3)
-mc1.metric("Worst Case (10th %ile)", f"{p10[-1]:.1f}",
-           delta=f"{p10[-1]-100:.1f}% from start")
-mc2.metric("Median Outcome (50th %ile)", f"{p50[-1]:.1f}",
-           delta=f"{p50[-1]-100:.1f}% from start")
-mc3.metric("Best Case (90th %ile)", f"{p90[-1]:.1f}",
-           delta=f"{p90[-1]-100:.1f}% from start")
+mc1.metric("Worst Case (10th %ile)", f"{p10[-1]:.1f}", delta=f"{p10[-1]-100:.1f}% from start")
+mc2.metric("Median Outcome (50th %ile)", f"{p50[-1]:.1f}", delta=f"{p50[-1]-100:.1f}% from start")
+mc3.metric("Best Case (90th %ile)", f"{p90[-1]:.1f}", delta=f"{p90[-1]-100:.1f}% from start")
 
 st.markdown("---")
 
@@ -797,7 +984,6 @@ holdings_data = []
 for ticker, weight in zip(valid_tickers, weights):
     info = stock_info.get(ticker, {})
     period_return = individual_returns[ticker]
-
     try:
         current_price = prices[ticker].iloc[-1]
         if np.isnan(current_price):
@@ -824,7 +1010,7 @@ st.dataframe(pd.DataFrame(holdings_data), use_container_width=True)
 st.markdown("---")
 st.markdown("""
 ⚠️ **Disclaimer:** This dashboard is for informational and educational purposes only. 
-Data is provided by Yahoo Finance and may be delayed or inaccurate. 
+Data is provided by Polygon.io and may be delayed or inaccurate. 
 AI analysis is generated automatically and does not constitute professional financial, 
 legal, or investment advice. Past performance is not indicative of future results.
 Monte Carlo simulations are based on historical data and do not guarantee future performance.
