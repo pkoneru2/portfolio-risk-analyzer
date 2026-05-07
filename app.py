@@ -7,6 +7,7 @@ import numpy as np
 from openai import OpenAI
 import io
 import time
+import requests
 
 # Page configuration
 st.set_page_config(
@@ -27,6 +28,14 @@ HISTORICAL_SP500 = {
     "Historical Avg Sharpe": "~0.4–0.6",
     "Source": "Damodaran NYU (1928–2024)"
 }
+
+# ── Browser session to bypass rate limiting ──
+def get_session():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    return session
 
 # ── Column detection keywords ──
 TICKER_KEYWORDS = ['ticker', 'symbol', 'stock', 'security', 'instrument', 'asset']
@@ -252,15 +261,16 @@ risk_free_rate = st.sidebar.slider(
     step=0.1
 ) / 100
 
-# ── Data Fetching with retry logic ──
+# ── Data Fetching with browser session and retry logic ──
 @st.cache_data(ttl=900)
 def fetch_portfolio_data(tickers, period):
+    session = get_session()
     data = {}
     info = {}
     for ticker in tickers:
         for attempt in range(3):
             try:
-                stock = yf.Ticker(ticker)
+                stock = yf.Ticker(ticker, session=session)
                 hist = stock.history(period=period)
                 if not hist.empty:
                     data[ticker] = hist['Close']
@@ -275,9 +285,10 @@ def fetch_portfolio_data(tickers, period):
 
 @st.cache_data(ttl=900)
 def fetch_benchmark(period):
+    session = get_session()
     for attempt in range(3):
         try:
-            sp500 = yf.Ticker("^GSPC")
+            sp500 = yf.Ticker("^GSPC", session=session)
             hist = sp500.history(period=period)['Close']
             return hist
         except Exception:
