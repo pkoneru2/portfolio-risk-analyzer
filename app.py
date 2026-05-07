@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from openai import OpenAI
 import io
+import time
 
 # Page configuration
 st.set_page_config(
@@ -173,7 +174,6 @@ if input_method == "📂 Upload Broker CSV":
                 amount = clean_amount(row[amount_col])
                 if ticker and amount > 0:
                     investment_amounts[ticker] = investment_amounts.get(ticker, 0) + amount
-                    # Store broker price as fallback
                     if price_col:
                         price = clean_amount(row[price_col])
                         if price > 0:
@@ -252,26 +252,38 @@ risk_free_rate = st.sidebar.slider(
     step=0.1
 ) / 100
 
-# ── Data Fetching ──
-@st.cache_data(ttl=300)
+# ── Data Fetching with retry logic ──
+@st.cache_data(ttl=900)
 def fetch_portfolio_data(tickers, period):
     data = {}
     info = {}
     for ticker in tickers:
-        try:
-            stock = yf.Ticker(ticker)
-            hist = stock.history(period=period)
-            if not hist.empty:
-                data[ticker] = hist['Close']
-                info[ticker] = stock.info
-        except Exception as e:
-            st.warning(f"Could not fetch data for {ticker}: {str(e)}")
+        for attempt in range(3):
+            try:
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period=period)
+                if not hist.empty:
+                    data[ticker] = hist['Close']
+                    info[ticker] = stock.info
+                break
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(3)
+                else:
+                    st.warning(f"Could not fetch data for {ticker} after 3 attempts.")
     return pd.DataFrame(data), info
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=900)
 def fetch_benchmark(period):
-    sp500 = yf.Ticker("^GSPC")
-    return sp500.history(period=period)['Close']
+    for attempt in range(3):
+        try:
+            sp500 = yf.Ticker("^GSPC")
+            hist = sp500.history(period=period)['Close']
+            return hist
+        except Exception:
+            if attempt < 2:
+                time.sleep(3)
+    return pd.Series()
 
 def calculate_metrics(prices, weights, risk_free_rate):
     returns = prices.pct_change().dropna()
@@ -460,7 +472,7 @@ with st.spinner("Fetching real-time market data..."):
 
 valid_tickers = list(prices.columns)
 if len(valid_tickers) < 2:
-    st.error("Could not fetch data for enough tickers. Please check your ticker symbols.")
+    st.error("Could not fetch enough data. Yahoo Finance may be temporarily rate limited. Please wait a few minutes and refresh.")
     st.stop()
 
 valid_investments = {t: investment_amounts.get(t, 10000) for t in valid_tickers}
@@ -775,7 +787,6 @@ for ticker, weight in zip(valid_tickers, weights):
     info = stock_info.get(ticker, {})
     period_return = individual_returns[ticker]
 
-    # Use Yahoo Finance price, fall back to broker CSV price
     try:
         current_price = prices[ticker].iloc[-1]
         if np.isnan(current_price):
